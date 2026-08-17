@@ -1,0 +1,40 @@
+{
+    "children": {
+        "송지유 🧑": {
+            "reward_minutes": 25,
+            "subjects": {
+                "국어 📖": [
+                    {
+                        "title": "소설책 읽기",
+                        "completed": true,
+                        "approved": true,
+                        "reward_minutes": 15
+                    }
+                ],
+                "수학 🧮": [],
+                "영어 🔤": [
+                    {
+                        "title": "영어 단어 10개 외우기",
+                        "completed": true,
+                        "approved": true,
+                        "reward_minutes": 15
+                    }
+                ],
+                "코딩": []
+            },
+            "pending_rewards": [],
+            "used_rewards_today": []
+        },
+        "송지안 👧": {
+            "reward_minutes": 0,
+            "subjects": {
+                "📖 국어": [],
+                "🧮 수학": [],
+                "🔤 영어": [],
+                "코딩": []
+            },
+            "pending_rewards": [],
+            "used_rewards_today": []
+        }
+    }
+}
