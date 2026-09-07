@@ -2,6 +2,7 @@ import json
 import os
 import socket
 import time
+import secrets
 from pydantic import BaseModel
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
@@ -13,27 +14,37 @@ DATA_FILE = "homework_data.json"
 DEFAULT_DATA = {
     "children": {
         "송지유 🧑": {
+            "pin": "1004",
+            "goal_type": "A",
+            "points": 0,
+            "point_goal": 159000,
+            "future_reward_requests": [],
             "reward_minutes": 0,
-            "subjects": {
+            "subjects_a": {
                 "📖 국어": [
-                    {"title": "교과서 3단원 읽기", "completed": False, "approved": False, "reward_minutes": 15},
-                    {"title": "받아쓰기 틀린 단어 3번 쓰기", "completed": False, "approved": False, "reward_minutes": 15}
+                    {"title": "교과서 3단원 읽기", "completed": False, "approved": False, "reward_minutes": 5},
+                    {"title": "받아쓰기 틀린 단어 3번 쓰기", "completed": False, "approved": False, "reward_minutes": 5}
                 ],
                 "🧮 수학": [
-                    {"title": "수학 익힘책 10-12쪽 풀기", "completed": False, "approved": False, "reward_minutes": 15}
+                    {"title": "수학 익힘책 10-12쪽 풀기", "completed": False, "approved": False, "reward_minutes": 5}
                 ]
             },
             "pending_rewards": [],
             "used_rewards_today": []  # 오늘 하루 동안 최종 사용(승인) 완료된 보상 목록
         },
         "송지안 👧": {
+            "pin": "1003",
+            "goal_type": "A",
+            "points": 0,
+            "point_goal": 159000,
+            "future_reward_requests": [],
             "reward_minutes": 0,
-            "subjects": {
+            "subjects_a": {
                 "🔤 영어": [
-                    {"title": "영어 단어 10개 외우기", "completed": False, "approved": False, "reward_minutes": 15}
+                    {"title": "영어 단어 10개 외우기", "completed": False, "approved": False, "reward_minutes": 5}
                 ],
                 "🎨 예체능/기타": [
-                    {"title": "리코더 연습 10분", "completed": False, "approved": False, "reward_minutes": 15}
+                    {"title": "리코더 연습 10분", "completed": False, "approved": False, "reward_minutes": 5}
                 ]
             },
             "pending_rewards": [],
@@ -61,21 +72,37 @@ def load_data():
                 
                 # 하위 자녀 데이터 필드 동기화 보완
                 for child_name, child_data in data["children"].items():
+                    if child_name == "송지유 🧑":
+                        child_data["pin"] = "1004"
+                    elif child_name == "송지안 👧":
+                        child_data["pin"] = "1003"
+                    elif "pin" not in child_data:
+                        child_data["pin"] = "0000"
+                    if "goal_type" not in child_data:
+                        child_data["goal_type"] = "A"
+                    if "points" not in child_data:
+                        child_data["points"] = 0
+                    if "point_goal" not in child_data:
+                        child_data["point_goal"] = 159000
+                    if "future_reward_requests" not in child_data:
+                        child_data["future_reward_requests"] = []
                     if "reward_minutes" not in child_data:
                         child_data["reward_minutes"] = 0
-                    if "subjects" not in child_data:
-                        child_data["subjects"] = {}
+                    if "subjects_a" not in child_data:
+                        child_data["subjects_a"] = child_data.pop("subjects", {})
+                    if "subjects_b" not in child_data:
+                        child_data["subjects_b"] = {}
                     if "pending_rewards" not in child_data:
                         child_data["pending_rewards"] = []
                     if "used_rewards_today" not in child_data:
                         child_data["used_rewards_today"] = []
                         
-                    for subj, tasks in child_data["subjects"].items():
+                    for subj, tasks in child_data["subjects_a"].items():
                         for task in tasks:
                             if "approved" not in task:
                                 task["approved"] = task.get("completed", False)
                             if "reward_minutes" not in task:
-                                task["reward_minutes"] = 15
+                                task["reward_minutes"] = 5
                 return data
         except Exception:
             return DEFAULT_DATA
@@ -91,6 +118,10 @@ def save_data(data):
     except Exception as e:
         print(f"데이터 저장 실패: {e}")
 
+def get_subjects(child_data, goal_type):
+    key = "subjects_b" if goal_type == "B" else "subjects_a"
+    return child_data.setdefault(key, {})
+
 # FastAPI 인스턴스 생성
 app = FastAPI(title="초등 스스로 다자녀 숙제방 API")
 
@@ -101,20 +132,36 @@ class PinVerifyRequest(BaseModel):
 class ChildRequest(BaseModel):
     name: str
 
+class ChildLoginRequest(BaseModel):
+    child: str
+    pin: str
+
+class FutureRewardRequest(BaseModel):
+    child: str
+    request_type: str
+    amount: int
+
+class FutureRewardActionRequest(BaseModel):
+    child: str
+    index: int
+
 class SubjectRequest(BaseModel):
     child: str
     name: str
+    goal_type: str = "A"
 
 class TaskAddRequest(BaseModel):
     child: str
     subject: str
     title: str
-    reward_minutes: int = 15
+    reward_minutes: int = 5
+    goal_type: str = "A"
 
 class TaskActionRequest(BaseModel):
     child: str
     subject: str
     index: int
+    goal_type: str = "A"
 
 class RewardUseRequest(BaseModel):
     child: str
@@ -133,6 +180,7 @@ class RewardAdjustRequest(BaseModel):
     child: str
     minutes: int
     reason: str = "엄빠 수동 조정"
+    goal_type: str = "A"
 
 
 # --- HTML 반응형 싱글 파일 템플릿 (Tailwind + Vue.js 3 + SweetAlert2) ---
@@ -169,14 +217,57 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 <body class="min-h-screen pb-12 text-slate-800">
 
     <div id="app" v-cloak>
+        <section v-if="!isAuthenticated" class="min-h-screen flex items-center justify-center px-4 bg-gradient-to-br from-amber-50 to-sky-50">
+            <div class="w-full max-w-md bg-white rounded-3xl border border-amber-100 shadow-xl p-6">
+                <h1 class="kids-title text-3xl text-center text-amber-600 mb-2">✨ 스스로 목표방 ✨</h1>
+                <p class="text-center text-sm text-slate-500 mb-6">내 이름을 고르고 비밀번호를 입력해 주세요.</p>
+                <div class="grid grid-cols-2 gap-3 mb-5">
+                    <button v-for="childName in childNames" :key="childName" @click="selectedChild = childName"
+                            class="p-4 rounded-2xl font-black text-sm transition-all"
+                            :class="selectedChild === childName ? 'bg-amber-400 text-slate-800 shadow-md scale-105' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'">
+                        {{ childName }}
+                    </button>
+                    <button @click="switchToAdmin" class="col-span-2 p-4 rounded-2xl font-black text-sm bg-purple-100 text-purple-700 hover:bg-purple-200 transition-all">
+                        👨‍👩‍👧‍👦 엄빠 모드
+                    </button>
+                </div>
+                <input v-model="loginPin" type="password" maxlength="4" placeholder="비밀번호 4자리 (기본 0000)"
+                       class="w-full border border-slate-200 rounded-xl px-4 py-3 text-center tracking-[0.5em] mb-3">
+                <button @click="loginChild" class="w-full bg-amber-500 hover:bg-amber-600 text-white font-black py-3 rounded-xl">
+                    내 목표방 들어가기
+                </button>
+            </div>
+        </section>
+
+        <section v-else-if="showGoalChooser" class="min-h-screen flex items-center justify-center px-4 bg-gradient-to-br from-amber-50 to-sky-50">
+            <div class="w-full max-w-2xl">
+                <h2 class="text-center text-2xl font-black text-slate-700 mb-2">{{ selectedChild }}의 목표방</h2>
+                <p class="text-center text-sm text-slate-500 mb-6">들어갈 목표를 골라 주세요.</p>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+                    <button @click="enterGoal('A')" class="text-left bg-white border-2 border-amber-200 hover:border-amber-500 rounded-3xl p-6 shadow-md transition-all">
+                        <span class="text-4xl">📚</span>
+                        <h3 class="text-xl font-black text-amber-700 mt-3">A형 목표</h3>
+                        <p class="text-sm text-slate-500 mt-2">스스로 숙제방<br>숙제를 완료하고 자유 시간을 모아요.</p>
+                    </button>
+                    <button @click="enterGoal('B')" class="text-left bg-white border-2 border-sky-200 hover:border-sky-500 rounded-3xl p-6 shadow-md transition-all">
+                        <span class="text-4xl">🚀</span>
+                        <h3 class="text-xl font-black text-sky-700 mt-3">B형 목표</h3>
+                        <p class="text-sm text-slate-500 mt-2">내 미래투자<br>나와 가족을 위한 일을 포인트로 모아요.</p>
+                    </button>
+                </div>
+            </div>
+        </section>
+
+        <div v-else>
         <!-- 1. 상단 헤더 -->
         <header class="bg-white border-b border-amber-100 shadow-sm sticky top-0 z-50 px-4 py-3">
             <div class="max-w-4xl mx-auto flex justify-between items-center">
                 <h1 class="text-xl md:text-2xl font-black text-amber-600 flex items-center gap-2 kids-title">
-                    <span>✨ 스스로 숙제방 ✨</span>
+                    <span v-if="currentGoalType === 'A'">✨ 스스로 숙제방 ✨</span>
+                    <span v-else>🚀 내 미래를 위한 투자</span>
                 </h1>
                 
-                <div class="flex items-center gap-2">
+                <div class="flex items-center gap-2 ml-4 flex-wrap justify-end">
                     <!-- 현재 모드 표시 뱃지 -->
                     <span class="text-xs md:text-sm font-bold px-3 py-1.5 rounded-full shadow-inner animate-pulse"
                           :class="isAdmin ? 'bg-purple-100 text-purple-700' : 'bg-sky-100 text-sky-700'">
@@ -189,6 +280,15 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     </button>
                     <button v-else @click="switchToKids" class="bg-sky-500 hover:bg-sky-600 active:scale-95 transition-all text-white font-bold text-xs md:text-sm px-3 py-2 rounded-full shadow-md flex items-center gap-1">
                         <i class="fa-solid fa-child"></i> 아이들 모드로
+                    </button>
+                    <button v-if="currentGoalType === 'A'" @click="switchGoal('B')" class="bg-sky-100 hover:bg-sky-200 text-sky-700 font-bold text-xs md:text-sm px-3 py-2 rounded-full shadow-sm">
+                        미래투자
+                    </button>
+                    <button v-else @click="switchGoal('A')" class="bg-amber-100 hover:bg-amber-200 text-amber-700 font-bold text-xs md:text-sm px-3 py-2 rounded-full shadow-sm">
+                        숙제방
+                    </button>
+                    <button @click="goHome" class="bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold text-xs md:text-sm px-3 py-2 rounded-full shadow-sm">
+                        처음 화면
                     </button>
                 </div>
             </div>
@@ -217,16 +317,16 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                         <i class="fa-solid fa-user-minus"></i> 아이 삭제
                     </button>
                     <button @click="deductReward" class="bg-rose-100 hover:bg-rose-200 text-rose-700 font-bold text-xs px-3 py-2 rounded-xl transition-all flex items-center gap-1">
-                        <i class="fa-solid fa-circle-minus text-rose-600"></i> 수동 시간 차감(-)
+                        <i class="fa-solid fa-circle-minus text-rose-600"></i> {{ currentGoalType === 'B' ? '수동 포인트 차감(-)' : '수동 시간 차감(-)' }}
                     </button>
                     <button @click="adjustReward" class="bg-amber-100 hover:bg-amber-200 text-amber-700 font-bold text-xs px-3 py-2 rounded-xl transition-all flex items-center gap-1">
-                        <i class="fa-solid fa-clock-rotate-left"></i> 보상 시간 조정
+                        <i class="fa-solid fa-clock-rotate-left"></i> {{ currentGoalType === 'B' ? '보상 포인트 조정' : '보상 시간 조정' }}
                     </button>
                 </div>
             </section>
 
             <!-- 🎁 선택된 아이의 내가 모은 자유 시간 현황 패널 -->
-            <section class="bg-gradient-to-r from-amber-100 to-yellow-50 border-2 border-amber-200 rounded-3xl p-4 md:p-6 shadow-md mb-6 relative overflow-hidden">
+            <section v-if="currentGoalType === 'A'" class="bg-gradient-to-r from-amber-100 to-yellow-50 border-2 border-amber-200 rounded-3xl p-4 md:p-6 shadow-md mb-6 relative overflow-hidden">
                 <div class="absolute -right-6 -bottom-6 text-amber-200 opacity-40 text-8xl pointer-events-none">
                     <i class="fa-solid fa-gift"></i>
                 </div>
@@ -244,14 +344,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                             </span>
                         </div>
                         <!-- 상시 노출되는 수동 시간 차감/추가 버튼 (아이들 모드에서도 누르면 PIN 확인 후 바로 작동) -->
-                        <div class="mt-2.5 flex items-center gap-2">
-                            <button @click="deductReward" class="bg-rose-500 hover:bg-rose-600 active:scale-95 text-white font-bold text-xs px-3 py-1.5 rounded-xl shadow-sm transition-all flex items-center gap-1">
-                                <i class="fa-solid fa-minus-circle"></i> 시간 수동 차감 (-)
-                            </button>
-                            <button @click="addReward" class="bg-emerald-500 hover:bg-emerald-600 active:scale-95 text-white font-bold text-xs px-3 py-1.5 rounded-xl shadow-sm transition-all flex items-center gap-1">
-                                <i class="fa-solid fa-plus-circle"></i> 시간 수동 추가 (+)
-                            </button>
-                        </div>
                     </div>
                     
                     <div class="bg-white/80 backdrop-blur-sm rounded-2xl p-3 border border-amber-200/50">
@@ -259,8 +351,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                             <i class="fa-solid fa-ticket-simple text-amber-500"></i> 시간 쿠폰 신청하기
                         </p>
                         <div class="flex flex-wrap gap-2 justify-end">
-                            <button @click="requestUseReward(5, '게임하기 🎮')" class="bg-rose-400 hover:bg-rose-500 text-white font-bold text-xs px-3 py-2 rounded-xl active:scale-95 transition-all shadow-sm">
-                                🎮 게임 5분
+                            <button @click="requestGameReward" class="bg-rose-400 hover:bg-rose-500 text-white font-bold text-xs px-3 py-2 rounded-xl active:scale-95 transition-all shadow-sm">
+                                🎮 게임 요청
                             </button>
                             <button @click="requestUseReward(5, '영상보기 📺')" class="bg-indigo-400 hover:bg-indigo-500 text-white font-bold text-xs px-3 py-2 rounded-xl active:scale-95 transition-all shadow-sm">
                                 📺 영상 5분
@@ -273,15 +365,43 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 </div>
             </section>
 
+            <section v-if="currentGoalType === 'B'" class="bg-gradient-to-r from-sky-100 to-emerald-50 border-2 border-sky-200 rounded-3xl p-4 md:p-6 shadow-md mb-6 relative overflow-hidden">
+                <div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                    <div>
+                        <h2 class="text-sky-800 font-extrabold text-sm md:text-base flex items-center gap-1.5">
+                            <i class="fa-solid fa-rocket text-sky-500"></i> 내 미래투자 포인트
+                        </h2>
+                        <div class="text-3xl md:text-4xl font-black text-sky-600 mt-1 kids-title">
+                            ⭐ {{ activeChildData.points || 0 }} P
+                        </div>
+                        <p class="text-xs text-slate-500 mt-1">최종 목표 {{ (activeChildData.point_goal || 159000).toLocaleString() }} P</p>
+                    </div>
+                    <div class="w-full md:w-1/2">
+                        <div class="flex justify-between text-xs font-bold text-slate-500 mb-1">
+                            <span>목표 달성률</span><span>{{ pointProgress }}%</span>
+                        </div>
+                        <div class="h-4 bg-white rounded-full overflow-hidden border border-sky-200">
+                            <div class="h-full bg-sky-500 transition-all" :style="{ width: pointProgress + '%' }"></div>
+                        </div>
+                        <p class="text-xs text-slate-500 mt-2">나중에 현금이나 주식으로 바꿔 달라고 요청할 수 있어요.</p>
+                        <div class="flex flex-wrap gap-2 mt-3">
+                            <button @click="requestFutureReward('현금')" class="bg-emerald-500 hover:bg-emerald-600 text-white font-bold text-xs px-3 py-2 rounded-xl">💵 현금 요청</button>
+                            <button @click="requestFutureReward('주식')" class="bg-indigo-500 hover:bg-indigo-600 text-white font-bold text-xs px-3 py-2 rounded-xl">📈 주식 요청</button>
+                            <button v-if="isAdmin" @click="addSubjectFor('B')" class="bg-sky-500 hover:bg-sky-600 text-white font-bold text-xs px-3 py-2 rounded-xl">➕ 투자 항목 추가</button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
             <!-- 🔔 2-1. 통합 숙제 완료 승인 대기 목록 (엄빠 모드일 때 최상단에 일괄 표시!) -->
-            <section v-if="isAdmin && allPendingTasks.length > 0" class="bg-amber-50 border border-amber-300 rounded-3xl p-4 shadow-sm mb-6">
+            <section v-if="isAdmin && allPendingHomeworkTasks.length > 0" class="bg-amber-50 border border-amber-300 rounded-3xl p-4 shadow-sm mb-6">
                 <h3 class="font-bold text-amber-800 text-sm md:text-base flex items-center gap-1.5 mb-3">
                     <i class="fa-solid fa-bell text-amber-600 animate-bounce"></i> 
                     📢 아이들이 숙제를 마쳤어요! 완료 승인을 해주세요!
                 </h3>
                 
                 <div class="space-y-2">
-                    <div v-for="item in allPendingTasks" :key="item.child + '-' + item.subject + '-' + item.index" class="flex items-center justify-between bg-white p-3 rounded-2xl border border-amber-100 shadow-sm">
+                    <div v-for="item in allPendingHomeworkTasks" :key="item.child + '-' + item.subject + '-' + item.index" class="flex items-center justify-between bg-white p-3 rounded-2xl border border-amber-100 shadow-sm">
                         <div class="flex items-center gap-2 text-xs md:text-sm font-semibold text-slate-700">
                             <span class="bg-purple-100 text-purple-800 px-2 py-0.5 rounded-lg text-[10px] font-black">{{ item.child }}</span>
                             <span class="bg-amber-100 text-amber-800 px-2 py-0.5 rounded-lg text-[10px] font-black">{{ item.subject }}</span>
@@ -289,8 +409,28 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                             <span class="text-[10px] text-emerald-600 font-extrabold bg-emerald-50 border border-emerald-100 px-1.5 py-0.5 rounded-md flex-shrink-0">+{{ item.reward_minutes }}분</span>
                         </div>
                         
-                        <button @click="approveTask(item.child, item.subject, item.index)" class="bg-emerald-500 hover:bg-emerald-600 text-white font-extrabold text-xs px-3 py-1.5 rounded-full active:scale-95 transition-all shadow-sm flex-shrink-0">
+                        <button @click="approveTask(item.child, item.subject, item.index, item.goal_type)" class="bg-emerald-500 hover:bg-emerald-600 text-white font-extrabold text-xs px-3 py-1.5 rounded-full active:scale-95 transition-all shadow-sm flex-shrink-0">
                             승인 👍
+                        </button>
+                    </div>
+                </div>
+            </section>
+
+            <section v-if="isAdmin && allPendingInvestmentTasks.length > 0" class="bg-sky-50 border border-sky-300 rounded-3xl p-4 shadow-sm mb-6">
+                <h3 class="font-bold text-sky-800 text-sm md:text-base flex items-center gap-1.5 mb-3">
+                    <i class="fa-solid fa-rocket text-sky-600 animate-bounce"></i>
+                    📈 미래투자 항목을 완료했어요! 승인을 해주세요!
+                </h3>
+                <div class="space-y-2">
+                    <div v-for="item in allPendingInvestmentTasks" :key="item.child + '-' + item.subject + '-' + item.index" class="flex items-center justify-between bg-white p-3 rounded-2xl border border-sky-100 shadow-sm">
+                        <div class="flex items-center gap-2 text-xs md:text-sm font-semibold text-slate-700">
+                            <span class="bg-purple-100 text-purple-800 px-2 py-0.5 rounded-lg text-[10px] font-black">{{ item.child }}</span>
+                            <span class="bg-sky-100 text-sky-700 px-2 py-0.5 rounded-lg text-[10px] font-black">{{ item.subject }}</span>
+                            <span class="truncate max-w-[150px] md:max-w-none">{{ item.title }}</span>
+                            <span class="text-[10px] text-sky-600 font-extrabold bg-sky-50 border border-sky-100 px-1.5 py-0.5 rounded-md flex-shrink-0">+{{ item.reward_minutes }}P</span>
+                        </div>
+                        <button @click="approveTask(item.child, item.subject, item.index, 'B')" class="bg-sky-500 hover:bg-sky-600 text-white font-extrabold text-xs px-3 py-1.5 rounded-full active:scale-95 transition-all shadow-sm flex-shrink-0">
+                            포인트 승인 👍
                         </button>
                     </div>
                 </div>
@@ -330,6 +470,28 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 </div>
             </section>
 
+            <section v-if="isAdmin && allFutureRewardRequests.length > 0" class="bg-sky-50 border border-sky-200 rounded-3xl p-4 shadow-sm mb-6">
+                <h3 class="font-bold text-sky-800 text-sm md:text-base flex items-center gap-1.5 mb-3">
+                    <i class="fa-solid fa-chart-line"></i> 미래투자 현금·주식 요청
+                </h3>
+                <div class="space-y-2">
+                    <div v-for="item in allFutureRewardRequests" :key="item.child + '-' + item.time + '-' + item.type" class="flex flex-wrap items-center justify-between gap-2 bg-white p-3 rounded-2xl border border-sky-100 shadow-sm">
+                        <div class="flex flex-wrap items-center gap-2 text-xs md:text-sm font-semibold text-slate-700">
+                            <span class="bg-purple-100 text-purple-800 px-2 py-0.5 rounded-lg text-[10px] font-black">{{ item.child }}</span>
+                            <span class="bg-sky-100 text-sky-700 px-2 py-0.5 rounded-lg text-[10px] font-black">{{ item.type }}</span>
+                            <span>{{ item.points.toLocaleString() }}P</span>
+                            <span class="text-emerald-700">{{ item.amount > 0 ? item.amount.toLocaleString() + '원' : '금액 미입력' }}</span>
+                            <span :class="item.status === 'approved' ? 'text-emerald-600' : 'text-amber-600'">{{ item.status === 'approved' ? '지급 완료' : '승인 대기' }}</span>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <span class="text-[10px] text-slate-400">{{ item.time }}</span>
+                            <button v-if="isAdmin && item.status !== 'approved'" @click="approveFutureReward(item.child, item.index)" class="bg-emerald-500 hover:bg-emerald-600 text-white font-bold text-[10px] px-2.5 py-1.5 rounded-full">승인 및 지급</button>
+                            <button v-if="isAdmin && item.status !== 'approved'" @click="rejectFutureReward(item.child, item.index)" class="bg-rose-500 hover:bg-rose-600 text-white font-bold text-[10px] px-2.5 py-1.5 rounded-full">거절</button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
             <!-- 4. 🛠️ 엄빠 전용 관리 메뉴 -->
             <section v-if="isAdmin" class="bg-purple-50 border-2 border-purple-100 rounded-3xl p-4 shadow-sm mb-6 flex flex-col md:flex-row md:items-center justify-between gap-4">
                 <div class="flex items-center gap-2">
@@ -339,14 +501,19 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                         <p class="text-xs text-purple-600">과목 생성과 숙제 추가, 완료 승인을 조율합니다.</p>
                     </div>
                 </div>
-                <button @click="addSubject" class="bg-purple-600 hover:bg-purple-700 active:scale-95 transition-all text-white font-bold text-xs md:text-sm px-4 py-2.5 rounded-full shadow-md flex items-center gap-1.5 self-start md:self-auto">
-                    <i class="fa-solid fa-folder-plus"></i> [ {{ selectedChild }} ] 의 과목 만들기
-                </button>
+                <div class="flex flex-wrap gap-2 self-start md:self-auto">
+                    <button @click="addSubjectFor('A')" class="bg-amber-500 hover:bg-amber-600 active:scale-95 transition-all text-white font-bold text-xs md:text-sm px-4 py-2.5 rounded-full shadow-md flex items-center gap-1.5">
+                        <i class="fa-solid fa-book"></i> 숙제방 과목 추가
+                    </button>
+                    <button @click="addSubjectFor('B')" class="bg-sky-600 hover:bg-sky-700 active:scale-95 transition-all text-white font-bold text-xs md:text-sm px-4 py-2.5 rounded-full shadow-md flex items-center gap-1.5">
+                        <i class="fa-solid fa-rocket"></i> 미래투자 항목 추가
+                    </button>
+                </div>
             </section>
 
             <!-- 5. 📚 [ 선택된 아이 ] 의 과목별 숙제 카드 리스트 -->
             <section class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div v-for="(tasks, subjName, index) in activeChildData.subjects" :key="subjName" class="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden flex flex-col justify-between">
+                <div v-for="(tasks, subjName, index) in activeSubjects" :key="subjName" class="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden flex flex-col justify-between">
                     <div class="p-4 border-b flex items-center justify-between" :class="getHeaderStyle(index)">
                         <div class="flex items-center gap-1 font-black text-sm md:text-base">
                             <span>{{ subjName }}</span>
@@ -378,12 +545,12 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                         <div v-else v-for="(task, taskIdx) in tasks" :key="taskIdx" class="flex items-center justify-between p-2 hover:bg-slate-50 rounded-2xl transition-all">
                             <div class="flex items-center gap-2 max-w-[70%]">
                                 <i v-if="task.completed && task.approved" class="fa-solid fa-circle-check text-emerald-500"></i>
-                                <i v-elif="task.completed && !task.approved" class="fa-solid fa-hourglass-half text-amber-500 animate-spin"></i>
+                                <i v-else-if="task.completed && !task.approved" class="fa-solid fa-hourglass-half text-amber-500 animate-spin"></i>
                                 <i v-else class="fa-regular fa-star text-amber-400"></i>
                                 
                                 <span class="text-xs md:text-sm break-all font-semibold" :class="getTaskTextClass(task)">
                                     {{ task.title }}
-                                    <span class="text-[9px] text-emerald-600 font-extrabold bg-emerald-50 border border-emerald-100 px-1.5 py-0.5 rounded-md ml-1">+{{ task.reward_minutes }}분</span>
+                                    <span class="text-[9px] text-emerald-600 font-extrabold bg-emerald-50 border border-emerald-100 px-1.5 py-0.5 rounded-md ml-1">+{{ task.reward_minutes }}{{ currentGoalType === 'B' ? 'P' : '분' }}</span>
                                 </span>
                             </div>
                             
@@ -431,7 +598,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                         
                         <div class="text-xs text-slate-400 mb-0.5 font-bold">{{ log.time }}</div>
                         <div class="text-xs md:text-sm font-semibold text-slate-700 flex items-center gap-1.5">
-                            <span class="bg-amber-100 text-amber-800 font-extrabold px-2 py-0.5 rounded-md text-[10px]">{{ log.minutes > 0 ? '+' : '' }}{{ log.minutes }}분</span>
+                            <span class="bg-amber-100 text-amber-800 font-extrabold px-2 py-0.5 rounded-md text-[10px]">{{ log.minutes > 0 ? '+' : '' }}{{ log.minutes }}{{ currentGoalType === 'B' ? 'P' : '분' }}</span>
                             <span>{{ log.name }}</span>
                             <button v-if="isAdmin" @click="deleteRewardLog(log)" class="text-slate-400 hover:text-rose-600 bg-rose-50 hover:bg-rose-100 border border-rose-100 px-2 py-1 rounded-lg ml-auto text-[10px] font-bold transition-all flex items-center gap-1" title="최근 기록 삭제">
                                 <i class="fa-solid fa-trash-can"></i> 삭제
@@ -441,6 +608,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 </div>
             </section>
         </main>
+        </div>
     </div>
 
     <script>
@@ -450,6 +618,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             data() {
                 return {
                     isAdmin: false,          // 기본 화면 모드: 아이들 모드
+                    isAuthenticated: false,
+                    showGoalChooser: false,
+                    childNames: [],
+                    loginPin: '',
+                    currentGoalType: 'A',
                     selectedChild: '',       // 선택된 아이 이름
                     childrenData: {},        // 전체 아이들의 데이터 컨테이너
                     headerColors: [
@@ -477,7 +650,14 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 },
                 // 선택된 아이의 전체 정보 반환
                 activeChildData() {
-                    return this.childrenData[this.selectedChild] || { reward_minutes: 0, subjects: {}, pending_rewards: [], used_rewards_today: [] };
+                    return this.childrenData[this.selectedChild] || { reward_minutes: 0, points: 0, point_goal: 159000, subjects_a: {}, subjects_b: {}, pending_rewards: [], used_rewards_today: [] };
+                },
+                activeSubjects() {
+                    return this.currentGoalType === 'B' ? (this.activeChildData.subjects_b || {}) : (this.activeChildData.subjects_a || {});
+                },
+                pointProgress() {
+                    const goal = this.activeChildData.point_goal || 159000;
+                    return Math.min(100, Math.round(((this.activeChildData.points || 0) / goal) * 100));
                 },
                 // 해당 아이의 승인 대기 중인 사용 요청들의 분 합계
                 totalPendingMinutes() {
@@ -487,21 +667,24 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 allPendingTasks() {
                     const list = [];
                     for (const [childName, data] of Object.entries(this.childrenData)) {
-                        for (const [subjName, tasks] of Object.entries(data.subjects)) {
-                            tasks.forEach((task, idx) => {
-                                if (task.completed && !task.approved) {
-                                    list.push({
-                                        child: childName,
-                                        subject: subjName,
-                                        index: idx,
-                                        title: task.title,
-                                        reward_minutes: task.reward_minutes || 15
-                                    });
-                                }
-                            });
+                        for (const goalType of ['A', 'B']) {
+                            const subjects = goalType === 'B' ? data.subjects_b || {} : data.subjects_a || {};
+                            for (const [subjName, tasks] of Object.entries(subjects)) {
+                                tasks.forEach((task, idx) => {
+                                    if (task.completed && !task.approved) {
+                                        list.push({ child: childName, subject: subjName, index: idx, title: task.title, reward_minutes: task.reward_minutes || 5, goal_type: goalType });
+                                    }
+                                });
+                            }
                         }
                     }
                     return list;
+                },
+                allPendingHomeworkTasks() {
+                    return this.allPendingTasks.filter(task => task.goal_type === 'A');
+                },
+                allPendingInvestmentTasks() {
+                    return this.allPendingTasks.filter(task => task.goal_type === 'B');
                 },
                 // 모든 아이들의 사용 허락 대기 상태인 보상 통합 취합 (엄빠 대시보드용)
                 allPendingRewards() {
@@ -517,25 +700,183 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                         });
                     }
                     return list;
+                },
+                allFutureRewardRequests() {
+                    const list = [];
+                    for (const [childName, data] of Object.entries(this.childrenData)) {
+                        (data.future_reward_requests || []).forEach((request, index) => {
+                            list.push({
+                                child: childName,
+                                index,
+                                type: request.type,
+                                points: request.points || 0,
+                                amount: request.amount || 0,
+                                time: request.time || '시간 미상',
+                                status: request.status || 'pending'
+                            });
+                        });
+                    }
+                    return list;
                 }
             },
             mounted() {
-                this.fetchData(true);
+                this.fetchChildren();
                 // 5초마다 주기적으로 다른 브라우저의 업데이트 상황 실시간 패치
-                setInterval(() => this.fetchData(false), 5000);
+                setInterval(() => {
+                    if (this.isAuthenticated && !this.showGoalChooser) this.fetchData(false);
+                }, 5000);
             },
             methods: {
+                async fetchChildren() {
+                    try {
+                        const response = await fetch('/api/children');
+                        const data = await response.json();
+                        this.childNames = data.children || [];
+                    } catch (error) {
+                        console.error('자녀 목록 조회 에러:', error);
+                    }
+                },
+                async loginChild() {
+                    if (!this.selectedChild || !this.loginPin) {
+                        Swal.fire('입력 필요', '아이와 비밀번호를 선택해 주세요.', 'warning');
+                        return;
+                    }
+                    const response = await fetch('/api/child/login', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ child: this.selectedChild, pin: this.loginPin })
+                    });
+                    const result = await response.json();
+                    if (!result.success) {
+                        Swal.fire('인증 실패', result.message, 'error');
+                        return;
+                    }
+                    this.currentGoalType = result.goal_type || 'A';
+                    this.isAuthenticated = true;
+                    this.showGoalChooser = true;
+                    this.loginPin = '';
+                },
+                enterGoal(goalType) {
+                    this.currentGoalType = goalType;
+                    this.showGoalChooser = false;
+                    this.fetchData(true);
+                },
+                switchGoal(goalType) {
+                    this.currentGoalType = goalType;
+                    this.fetchData();
+                },
+                goHome() {
+                    this.isAuthenticated = false;
+                    this.showGoalChooser = false;
+                    this.isAdmin = false;
+                    this.selectedChild = '';
+                    this.childrenData = {};
+                    this.fetchChildren();
+                },
+                async requestFutureReward(requestType) {
+                    const points = this.activeChildData.points || 0;
+                    if (points <= 0) {
+                        Swal.fire('포인트가 부족해요', '포인트를 모은 뒤 요청해 주세요.', 'warning');
+                        return;
+                    }
+                    const { value: amount } = await Swal.fire({
+                        title: requestType === '현금' ? '얼마를 받을까요?' : '얼마를 투자할까요?',
+                        input: 'number',
+                        inputAttributes: { min: 1, step: 1 },
+                        inputPlaceholder: '금액(원)을 입력해 주세요',
+                        showCancelButton: true,
+                        confirmButtonText: '요청하기',
+                        cancelButtonText: '취소',
+                        inputValidator: value => (!value || parseInt(value, 10) <= 0 ? '1원 이상 입력해 주세요.' : undefined)
+                    });
+                    if (!amount) return;
+                    const result = await Swal.fire({
+                        title: `${requestType}으로 바꿔 주세요`,
+                        text: `현재 모은 ${points}P를 ${parseInt(amount, 10).toLocaleString()}원 ${requestType}으로 요청할까요?`,
+                        icon: 'question',
+                        showCancelButton: true,
+                        confirmButtonText: '요청하기',
+                        cancelButtonText: '취소'
+                    });
+                    if (!result.isConfirmed) return;
+                    const response = await fetch('/api/future-reward/request', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ child: this.selectedChild, request_type: requestType, amount: parseInt(amount, 10) })
+                    });
+                    const data = await response.json();
+                    if (data.success) Swal.fire('요청 완료', '부모님께 요청 내용을 남겼어요.', 'success');
+                    else Swal.fire('요청 실패', data.message, 'error');
+                },
+                async approveFutureReward(childName, requestIndex) {
+                    const result = await Swal.fire({
+                        title: '현금·주식 요청을 승인할까요?',
+                        text: '승인 및 지급 완료로 기록됩니다.',
+                        icon: 'question',
+                        showCancelButton: true,
+                        confirmButtonText: '승인 및 지급',
+                        cancelButtonText: '취소'
+                    });
+                    if (!result.isConfirmed) return;
+                    const response = await fetch('/api/future-reward/approve', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ child: childName, index: requestIndex })
+                    });
+                    const data = await response.json();
+                    if (data.success) {
+                        await this.fetchData();
+                        Swal.fire('지급 완료', '미래투자 요청을 승인하고 지급 완료로 기록했습니다.', 'success');
+                    } else Swal.fire('처리 실패', data.message, 'error');
+                },
+                async rejectFutureReward(childName, requestIndex) {
+                    const result = await Swal.fire({
+                        title: '요청을 거절할까요?',
+                        icon: 'warning',
+                        showCancelButton: true,
+                        confirmButtonText: '거절',
+                        cancelButtonText: '취소'
+                    });
+                    if (!result.isConfirmed) return;
+                    const response = await fetch('/api/future-reward/reject', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ child: childName, index: requestIndex })
+                    });
+                    const data = await response.json();
+                    if (data.success) await this.fetchData();
+                    else Swal.fire('처리 실패', data.message, 'error');
+                },
+                async addSubjectFor(goalType) {
+                    const previousGoalType = this.currentGoalType;
+                    this.currentGoalType = goalType;
+                    await this.addSubject();
+                    this.currentGoalType = previousGoalType;
+                    await this.fetchData();
+                },
+                async requestGameReward() {
+                    const { value: minutes } = await Swal.fire({
+                        title: '게임을 몇 분 할까요?',
+                        input: 'number',
+                        inputAttributes: { min: 1, step: 1 },
+                        inputPlaceholder: '사용할 시간(분)',
+                        showCancelButton: true,
+                        confirmButtonText: '게임 요청',
+                        cancelButtonText: '취소',
+                        inputValidator: value => (!value || parseInt(value, 10) <= 0 ? '1분 이상 입력해 주세요.' : undefined)
+                    });
+                    if (minutes) this.requestUseReward(parseInt(minutes, 10), '게임 🎮');
+                },
                 // 데이터 비동기 조회
                 async fetchData(firstLoad = false) {
                     try {
-                        const response = await fetch(`/api/data?t=${Date.now()}`, { cache: 'no-store' });
+                        const scope = this.isAdmin ? '' : `&child=${encodeURIComponent(this.selectedChild)}`;
+                        const response = await fetch(`/api/data?t=${Date.now()}${scope}`, { cache: 'no-store' });
                         const data = await response.json();
                         this.childrenData = data.children || {};
                         
                         // 첫 로딩 시, 기본 첫 번째 아이를 선택 처리
-                        if (firstLoad && this.childList.length > 0) {
-                            this.selectedChild = this.childList[0];
-                        }
+                        if (firstLoad && !this.selectedChild && this.childList.length > 0) this.selectedChild = this.childList[0];
                     } catch (error) {
                         console.error("실시간 동기화 에러:", error);
                     }
@@ -543,6 +884,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 // 아이 탭 클릭
                 selectChild(childName) {
                     this.selectedChild = childName;
+                    if (this.isAdmin && this.childrenData[childName]) {
+                        this.currentGoalType = this.childrenData[childName].goal_type || 'A';
+                    }
                 },
                 // 엄빠 로그인 인증 및 전환
                 async switchToAdmin() {
@@ -572,6 +916,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                         
                         if (result.success) {
                             this.isAdmin = true;
+                            this.isAuthenticated = true;
+                            this.showGoalChooser = false;
+                            this.currentGoalType = 'A';
                             Swal.fire({
                                 title: '엄빠 모드로 변경 완료!',
                                 text: '다자녀 숙제 및 쿠폰 일괄 통합 관리판이 활성화되었습니다.',
@@ -587,7 +934,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 },
                 // 아이들 화면으로 전환
                 switchToKids() {
-                    this.isAdmin = false;
+                    this.goHome();
                     Swal.fire({
                         title: '아이들 모드 전환',
                         text: '열심히 공부하고 칭찬 자유 시간을 차곡차곡 받아보세요!',
@@ -595,7 +942,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                         timer: 1500,
                         showConfirmButton: false
                     });
-                    this.fetchData();
                 },
                 // 동적 아이 추가 (엄빠 모드 전용)
                 async addChild() {
@@ -691,9 +1037,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     if (!(await this.verifyPin())) return;
 
                     const { value: formValues } = await Swal.fire({
-                        title: `➖ [${this.selectedChild}] 시간 수동 차감 (-)`,
-                        html: '<p class="text-xs text-rose-600 mb-2 font-bold">시간을 잘못 부여했거나 차감할 분을 입력해 주세요.</p>' +
-                            '<input id="swal-input-deduct-minutes" type="number" min="1" class="swal2-input" placeholder="차감할 분 입력 (예: 15)">' +
+                        title: `➖ [${this.selectedChild}] ${this.currentGoalType === 'B' ? '포인트' : '시간'} 수동 차감 (-)`,
+                        html: `<p class="text-xs text-rose-600 mb-2 font-bold">${this.currentGoalType === 'B' ? '차감할 포인트' : '차감할 분'}을 입력해 주세요.</p>` +
+                            `<input id="swal-input-deduct-minutes" type="number" min="1" class="swal2-input" placeholder="차감할 ${this.currentGoalType === 'B' ? '포인트' : '분'} 입력">` +
                             '<input id="swal-input-deduct-reason" type="text" class="swal2-input" placeholder="차감 사유 (예: 시간 실수로 재입력)">',
                         showCancelButton: true,
                         confirmButtonText: '시간 차감하기',
@@ -709,7 +1055,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                             const reason = document.getElementById('swal-input-deduct-reason').value.trim();
                             return {
                                 minutes: -minutes, // 음수로 변환하여 전달
-                                reason: reason || '시간 실수 재입력 수동 차감'
+                                reason: reason || `${this.currentGoalType === 'B' ? '포인트' : '시간'} 실수 재입력 수동 차감`
                             };
                         }
                     });
@@ -721,13 +1067,14 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                         body: JSON.stringify({
                             child: this.selectedChild,
                             minutes: formValues.minutes,
-                            reason: formValues.reason
+                            reason: formValues.reason,
+                            goal_type: this.currentGoalType
                         })
                     });
                     const result = await response.json();
                     if (result.success) {
                         await this.fetchData();
-                        Swal.fire('차감 완료 👍', `[${this.selectedChild}] 보상 시간이 ${Math.abs(formValues.minutes)}분 차감되었습니다.`, 'success');
+                        Swal.fire('차감 완료 👍', `[${this.selectedChild}] ${this.currentGoalType === 'B' ? '포인트' : '보상 시간'} ${Math.abs(formValues.minutes)}${this.currentGoalType === 'B' ? 'P' : '분'} 차감되었습니다.`, 'success');
                     } else {
                         Swal.fire('차감 실패 😭', result.message, 'error');
                     }
@@ -737,9 +1084,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     if (!(await this.verifyPin())) return;
 
                     const { value: formValues } = await Swal.fire({
-                        title: `➕ [${this.selectedChild}] 시간 수동 추가 (+)`,
-                        html: '<p class="text-xs text-emerald-600 mb-2 font-bold">추가할 보상 시간을 입력해 주세요.</p>' +
-                            '<input id="swal-input-add-minutes" type="number" min="1" class="swal2-input" placeholder="추가할 분 입력 (예: 15)">' +
+                        title: `➕ [${this.selectedChild}] ${this.currentGoalType === 'B' ? '포인트' : '시간'} 수동 추가 (+)`,
+                        html: `<p class="text-xs text-emerald-600 mb-2 font-bold">추가할 ${this.currentGoalType === 'B' ? '포인트' : '보상 시간'}을 입력해 주세요.</p>` +
+                            `<input id="swal-input-add-minutes" type="number" min="1" class="swal2-input" placeholder="추가할 ${this.currentGoalType === 'B' ? '포인트' : '분'} 입력">` +
                             '<input id="swal-input-add-reason" type="text" class="swal2-input" placeholder="추가 사유 (예: 착한 일 보상)">',
                         showCancelButton: true,
                         confirmButtonText: '시간 추가하기',
@@ -755,7 +1102,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                             const reason = document.getElementById('swal-input-add-reason').value.trim();
                             return {
                                 minutes: minutes,
-                                reason: reason || '시간 수동 추가'
+                                reason: reason || `${this.currentGoalType === 'B' ? '포인트' : '시간'} 수동 추가`
                             };
                         }
                     });
@@ -767,13 +1114,14 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                         body: JSON.stringify({
                             child: this.selectedChild,
                             minutes: formValues.minutes,
-                            reason: formValues.reason
+                            reason: formValues.reason,
+                            goal_type: this.currentGoalType
                         })
                     });
                     const result = await response.json();
                     if (result.success) {
                         await this.fetchData();
-                        Swal.fire('추가 완료 👍', `[${this.selectedChild}] 보상 시간이 +${formValues.minutes}분 추가되었습니다.`, 'success');
+                        Swal.fire('추가 완료 👍', `[${this.selectedChild}] ${this.currentGoalType === 'B' ? '포인트' : '보상 시간'} +${formValues.minutes}${this.currentGoalType === 'B' ? 'P' : '분'} 추가되었습니다.`, 'success');
                     } else {
                         Swal.fire('추가 실패 😭', result.message, 'error');
                     }
@@ -781,8 +1129,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 // 엄빠 전용 보상 시간 수동 조정
                 async adjustReward() {
                     const { value: formValues } = await Swal.fire({
-                        title: `[${this.selectedChild}] 보상 시간 조정`,
-                        html: '<input id="swal-input-adjust-minutes" type="number" class="swal2-input" placeholder="예: -5 또는 10">' +
+                        title: `[${this.selectedChild}] ${this.currentGoalType === 'B' ? '보상 포인트' : '보상 시간'} 조정`,
+                        html: `<input id="swal-input-adjust-minutes" type="number" class="swal2-input" placeholder="예: -5 또는 10 ${this.currentGoalType === 'B' ? '포인트' : '분'}">` +
                             '<input id="swal-input-adjust-reason" type="text" class="swal2-input" placeholder="사유 (선택사항)">',
                         footer: '음수는 차감됩니다. 예: -5',
                         showCancelButton: true,
@@ -809,13 +1157,14 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                         body: JSON.stringify({
                             child: this.selectedChild,
                             minutes: formValues.minutes,
-                            reason: formValues.reason || '엄빠 수동 조정'
+                            reason: formValues.reason || '엄빠 수동 조정',
+                            goal_type: this.currentGoalType
                         })
                     });
                     const result = await response.json();
                     if (result.success) {
                         await this.fetchData();
-                        Swal.fire('적용 완료', `[${this.selectedChild}] 보상 시간이 ${result.minutes > 0 ? '+' : ''}${result.minutes}분 조정되었습니다.`, 'success');
+                        Swal.fire('적용 완료', `[${this.selectedChild}] ${this.currentGoalType === 'B' ? '포인트' : '보상 시간'} ${result.minutes > 0 ? '+' : ''}${result.minutes}${this.currentGoalType === 'B' ? 'P' : '분'} 조정되었습니다.`, 'success');
                     } else {
                         Swal.fire('조정 실패', result.message, 'error');
                     }
@@ -867,7 +1216,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                         const response = await fetch('/api/subject/add', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ child: this.selectedChild, name: name.trim() })
+                            body: JSON.stringify({ child: this.selectedChild, name: name.trim(), goal_type: this.currentGoalType })
                         });
                         const result = await response.json();
                         if (result.success) {
@@ -893,7 +1242,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                         await fetch('/api/subject/delete', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ child: this.selectedChild, name })
+                            body: JSON.stringify({ child: this.selectedChild, name, goal_type: this.currentGoalType })
                         });
                         this.fetchData();
                     }
@@ -904,8 +1253,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                         title: `➕ [${subjName}] 숙제 추가`,
                         html:
                             '<input id="swal-input-title" class="swal2-input w-full p-2 border rounded-xl" placeholder="숙제 내용 입력 (예: 일기 쓰기)">' +
-                            '<div class="mt-3 flex items-center justify-between px-3 text-slate-500 font-bold text-xs"><label for="swal-input-reward">완료 보상 시간(분):</label>' +
-                            '<input id="swal-input-reward" type="number" value="15" class="swal2-input w-24 p-1 border rounded-lg text-center"></div>',
+                            '<div class="mt-3 flex items-center justify-between px-3 text-slate-500 font-bold text-xs"><label for="swal-input-reward">' + (this.currentGoalType === 'B' ? '완료 포인트:' : '완료 보상 시간(분):') + '</label>' +
+                            '<input id="swal-input-reward" type="number" value="5" class="swal2-input w-24 p-1 border rounded-lg text-center"></div>',
                         focusConfirm: false,
                         showCancelButton: true,
                         confirmButtonText: '숙제 등록',
@@ -918,7 +1267,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                                 Swal.showValidationMessage('숙제 내용을 적어야 해요!');
                                 return false;
                             }
-                            return { title: title.trim(), reward: parseInt(reward) || 15 };
+                            return { title: title.trim(), reward: parseInt(reward) || 5 };
                         }
                     });
 
@@ -930,7 +1279,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                                 child: this.selectedChild,
                                 subject: subjName,
                                 title: formValues.title,
-                                reward_minutes: formValues.reward
+                                reward_minutes: formValues.reward,
+                                goal_type: this.currentGoalType
                             })
                         });
                         this.fetchData();
@@ -941,7 +1291,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     const response = await fetch('/api/task/complete', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ child: this.selectedChild, subject: subjName, index: taskIdx })
+                        body: JSON.stringify({ child: this.selectedChild, subject: subjName, index: taskIdx, goal_type: this.currentGoalType })
                     });
                     const result = await response.json();
                     if (result.success) {
@@ -954,17 +1304,17 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     }
                 },
                 // 완료 최종 승인 (엄빠 전용 통합 알림판/개별 카드 공용 지원)
-                async approveTask(childName, subjName, taskIdx) {
+                async approveTask(childName, subjName, taskIdx, goalType = this.currentGoalType) {
                     const response = await fetch('/api/task/approve', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ child: childName, subject: subjName, index: taskIdx })
+                        body: JSON.stringify({ child: childName, subject: subjName, index: taskIdx, goal_type: goalType })
                     });
                     const result = await response.json();
                     if (result.success) {
                         Swal.fire({
                             title: '최종 승인 완료! 👍',
-                            text: `[${childName}] 의 약속한 보상 자유 시간이 정상 가산되었습니다.`,
+                            text: `[${childName}] 의 약속한 ${this.currentGoalType === 'B' ? '포인트' : '보상 자유 시간'}이 정상 가산되었습니다.`,
                             icon: 'success',
                             timer: 2000,
                             showConfirmButton: false
@@ -993,7 +1343,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                                 body: JSON.stringify({
                                     child: this.selectedChild,
                                     subject: subject,
-                                    index: index
+                                    index: index,
+                                    goal_type: this.currentGoalType
                                 })
                             });
                             const data = await response.json();
@@ -1144,8 +1495,75 @@ def read_root():
     return HTML_TEMPLATE
  
 @app.get("/api/data")
-def get_data():
-    return load_data()
+def get_data(child: str = ""):
+    data = load_data()
+    if child:
+        if child not in data["children"]:
+            return {"children": {}}
+        return {"children": {child: data["children"][child]}}
+    return data
+
+@app.get("/api/children")
+def get_children():
+    data = load_data()
+    return {"children": list(data["children"].keys())}
+
+@app.post("/api/child/login")
+def child_login(req: ChildLoginRequest):
+    data = load_data()
+    child = data["children"].get(req.child)
+    if not child or req.pin != child.get("pin", "0000"):
+        return {"success": False, "message": "아이 비밀번호가 올바르지 않습니다."}
+    return {"success": True, "child": req.child, "goal_type": child.get("goal_type", "A")}
+
+@app.post("/api/future-reward/request")
+def request_future_reward(req: FutureRewardRequest):
+    data = load_data()
+    child = data["children"].get(req.child)
+    if not child or req.request_type not in {"현금", "주식"}:
+        return {"success": False, "message": "유효하지 않은 요청입니다."}
+    if child.get("points", 0) <= 0:
+        return {"success": False, "message": "포인트를 모은 뒤 요청해 주세요."}
+    if req.amount <= 0:
+        return {"success": False, "message": "요청 금액은 1원 이상이어야 합니다."}
+    child.setdefault("future_reward_requests", []).append({
+        "type": req.request_type,
+        "amount": req.amount,
+        "points": child.get("points", 0),
+        "time": time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))
+    })
+    save_data(data)
+    return {"success": True}
+
+@app.post("/api/future-reward/approve")
+def approve_future_reward(req: FutureRewardActionRequest):
+    data = load_data()
+    child = data["children"].get(req.child)
+    if not child:
+        return {"success": False, "message": "존재하지 않는 아이입니다."}
+    requests = child.get("future_reward_requests", [])
+    if req.index < 0 or req.index >= len(requests):
+        return {"success": False, "message": "유효하지 않은 요청입니다."}
+    request = requests[req.index]
+    if request.get("status") == "approved":
+        return {"success": False, "message": "이미 지급 완료된 요청입니다."}
+    request["status"] = "approved"
+    request["approved_time"] = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))
+    save_data(data)
+    return {"success": True}
+
+@app.post("/api/future-reward/reject")
+def reject_future_reward(req: FutureRewardActionRequest):
+    data = load_data()
+    child = data["children"].get(req.child)
+    if not child:
+        return {"success": False, "message": "존재하지 않는 아이입니다."}
+    requests = child.get("future_reward_requests", [])
+    if req.index < 0 or req.index >= len(requests):
+        return {"success": False, "message": "유효하지 않은 요청입니다."}
+    requests.pop(req.index)
+    save_data(data)
+    return {"success": True}
 
 @app.post("/api/verify-pin")
 def verify_pin(req: PinVerifyRequest):
@@ -1165,12 +1583,18 @@ def add_child(req: ChildRequest):
     
     # 신규 자녀 빈 구성 생성
     data["children"][name] = {
+        "pin": "0000",
+        "goal_type": "A",
+        "points": 0,
+        "point_goal": 159000,
+        "future_reward_requests": [],
         "reward_minutes": 0,
-        "subjects": {
+        "subjects_a": {
             "📖 국어": [],
             "🧮 수학": [],
             "🔤 영어": []
         },
+        "subjects_b": {},
         "pending_rewards": [],
         "used_rewards_today": []
     }
@@ -1194,10 +1618,11 @@ def add_subject(req: SubjectRequest):
     name = req.name.strip()
     if child not in data["children"]:
         return {"success": False, "message": "존재하지 않는 아이입니다."}
-    if name in data["children"][child]["subjects"]:
+    subjects = get_subjects(data["children"][child], req.goal_type)
+    if name in subjects:
         return {"success": False, "message": "이미 생성되어 있는 과목입니다!"}
     
-    data["children"][child]["subjects"][name] = []
+    subjects[name] = []
     save_data(data)
     return {"success": True}
 
@@ -1206,8 +1631,11 @@ def delete_subject(req: SubjectRequest):
     data = load_data()
     child = req.child
     name = req.name.strip()
-    if child in data["children"] and name in data["children"][child]["subjects"]:
-        del data["children"][child]["subjects"][name]
+    if child in data["children"]:
+        subjects = get_subjects(data["children"][child], req.goal_type)
+        if name not in subjects:
+            return {"success": False, "message": "유효하지 않은 요청입니다."}
+        del subjects[name]
         save_data(data)
         return {"success": True}
     return {"success": False, "message": "유효하지 않은 요청입니다."}
@@ -1220,10 +1648,11 @@ def add_task(req: TaskAddRequest):
     title = req.title.strip()
     if child not in data["children"]:
         return {"success": False, "message": "존재하지 않는 아이입니다."}
-    if subject not in data["children"][child]["subjects"]:
+    subjects = get_subjects(data["children"][child], req.goal_type)
+    if subject not in subjects:
         return {"success": False, "message": "존재하지 않는 과목입니다."}
     
-    data["children"][child]["subjects"][subject].append({
+    subjects[subject].append({
         "title": title,
         "completed": False,
         "approved": False,
@@ -1238,10 +1667,10 @@ def complete_task(req: TaskActionRequest):
     child = req.child
     subject = req.subject
     index = req.index
-    if child not in data["children"] or subject not in data["children"][child]["subjects"]:
+    if child not in data["children"] or subject not in get_subjects(data["children"][child], req.goal_type):
         return {"success": False, "message": "정보를 조회할 수 없습니다."}
     
-    tasks = data["children"][child]["subjects"][subject]
+    tasks = get_subjects(data["children"][child], req.goal_type)[subject]
     if index < 0 or index >= len(tasks):
         return {"success": False, "message": "인덱스 범위를 초과했습니다."}
     
@@ -1256,25 +1685,29 @@ def approve_task(req: TaskActionRequest):
     child = req.child
     subject = req.subject
     index = req.index
-    if child not in data["children"] or subject not in data["children"][child]["subjects"]:
+    if child not in data["children"] or subject not in get_subjects(data["children"][child], req.goal_type):
         return {"success": False, "message": "정보를 조회할 수 없습니다."}
     
-    tasks = data["children"][child]["subjects"][subject]
+    tasks = get_subjects(data["children"][child], req.goal_type)[subject]
     if index < 0 or index >= len(tasks):
         return {"success": False, "message": "유효하지 않은 번호입니다."}
     
     task = tasks[index]
     if task["completed"] and not task["approved"]:
         task["approved"] = True
-        reward_minutes = task.get("reward_minutes", 15)
+        reward_minutes = task.get("reward_minutes", 5)
         child_info = data["children"][child]
-        child_info["reward_minutes"] += reward_minutes
+        if req.goal_type == "B":
+            child_info["points"] = child_info.get("points", 0) + reward_minutes
+        else:
+            child_info["reward_minutes"] += reward_minutes
         local_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))
         child_info.setdefault("used_rewards_today", []).insert(0, {
             "timestamp": time.time(),
             "time": local_time,
             "minutes": reward_minutes,
-            "name": f"숙제 승인: {task['title']}"
+            "name": f"숙제 승인: {task['title']}",
+            "unit": "points" if req.goal_type == "B" else "minutes"
         })
         save_data(data)
         return {"success": True}
@@ -1286,8 +1719,8 @@ def delete_task(req: TaskActionRequest):
     child = req.child
     subject = req.subject
     index = req.index
-    if child in data["children"] and subject in data["children"][child]["subjects"]:
-        tasks = data["children"][child]["subjects"][subject]
+    if child in data["children"] and subject in get_subjects(data["children"][child], req.goal_type):
+        tasks = get_subjects(data["children"][child], req.goal_type)[subject]
         if 0 <= index < len(tasks):
             tasks.pop(index)
             save_data(data)
@@ -1327,20 +1760,27 @@ def adjust_reward(req: RewardAdjustRequest):
         return {"success": False, "message": "0이 아닌 정수로 입력해 주세요."}
 
     child_info = data["children"][child]
-    new_total = child_info["reward_minutes"] + req.minutes
+    if req.goal_type == "B":
+        new_total = child_info.get("points", 0) + req.minutes
+    else:
+        new_total = child_info["reward_minutes"] + req.minutes
     if new_total < 0:
-        return {"success": False, "message": "보상 시간은 0분보다 작아질 수 없습니다."}
+        return {"success": False, "message": f"{'포인트' if req.goal_type == 'B' else '보상 시간'}은 0보다 작아질 수 없습니다."}
 
-    child_info["reward_minutes"] = new_total
+    if req.goal_type == "B":
+        child_info["points"] = new_total
+    else:
+        child_info["reward_minutes"] = new_total
     local_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))
     child_info.setdefault("used_rewards_today", []).insert(0, {
         "timestamp": time.time(),
         "time": local_time,
         "minutes": req.minutes,
-        "name": req.reason.strip() or "엄빠 수동 조정"
+        "name": req.reason.strip() or "엄빠 수동 조정",
+        "unit": "points" if req.goal_type == "B" else "minutes"
     })
     save_data(data)
-    return {"success": True, "minutes": req.minutes, "reward_minutes": new_total}
+    return {"success": True, "minutes": req.minutes, "reward_minutes": new_total, "points": new_total if req.goal_type == "B" else child_info.get("points", 0)}
 
 @app.post("/api/reward/log/delete")
 def delete_reward_log(req: RewardLogDeleteRequest):
