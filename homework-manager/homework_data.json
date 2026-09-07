@@ -1,0 +1,44 @@
+{
+    "children": {
+        "송지유 🧑": {
+            "reward_minutes": 70,
+            "subjects": {
+                "독서": [],
+                "수학": [],
+                "코딩": []
+            },
+            "pending_rewards": [],
+            "used_rewards_today": [
+                {
+                    "timestamp": 1788490685.9407198,
+                    "time": "2026-09-04 11:58:05",
+                    "minutes": 15,
+                    "name": "숙제 승인: test2"
+                }
+            ]
+        },
+        "송지안 👧": {
+            "reward_minutes": 0,
+            "subjects": {
+                "🔤 영어": [
+                    {
+                        "title": "영어 단어 10개 외우기",
+                        "completed": false,
+                        "approved": false,
+                        "reward_minutes": 15
+                    }
+                ],
+                "🎨 예체능/기타": [
+                    {
+                        "title": "리코더 연습 10분",
+                        "completed": false,
+                        "approved": false,
+                        "reward_minutes": 15
+                    }
+                ]
+            },
+            "pending_rewards": [],
+            "used_rewards_today": []
+        }
+    }
+}
