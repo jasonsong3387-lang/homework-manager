@@ -13,7 +13,7 @@ DATA_FILE = "homework_data.json"
 # 기본 데이터 세팅 (송지유, 송지안 다자녀 기반 구조)
 DEFAULT_DATA = {
     "children": {
-        "송지유 🧑": {
+        "송지유 👧": {
             "pin": "1004",
             "goal_type": "A",
             "points": 0,
@@ -32,7 +32,7 @@ DEFAULT_DATA = {
             "pending_rewards": [],
             "used_rewards_today": []  # 오늘 하루 동안 최종 사용(승인) 완료된 보상 목록
         },
-        "송지안 👧": {
+        "송지안 🧑": {
             "pin": "1003",
             "goal_type": "A",
             "points": 0,
@@ -66,15 +66,19 @@ def load_data():
                 
                 # '첫째', '둘째' 한글 이름 임시 매핑 대응
                 if "첫째 🧑" in data["children"]:
-                    data["children"]["송지유 🧑"] = data["children"].pop("첫째 🧑")
+                    data["children"]["송지유 👧"] = data["children"].pop("첫째 🧑")
                 if "둘째 👧" in data["children"]:
-                    data["children"]["송지안 👧"] = data["children"].pop("둘째 👧")
+                    data["children"]["송지안 🧑"] = data["children"].pop("둘째 👧")
+                if "송지유 🧑" in data["children"]:
+                    data["children"]["송지유 👧"] = data["children"].pop("송지유 🧑")
+                if "송지안 👧" in data["children"]:
+                    data["children"]["송지안 🧑"] = data["children"].pop("송지안 👧")
                 
                 # 하위 자녀 데이터 필드 동기화 보완
                 for child_name, child_data in data["children"].items():
-                    if child_name == "송지유 🧑":
+                    if child_name == "송지유 👧":
                         child_data["pin"] = "1004"
-                    elif child_name == "송지안 👧":
+                    elif child_name == "송지안 🧑":
                         child_data["pin"] = "1003"
                     elif "pin" not in child_data:
                         child_data["pin"] = "0000"
